@@ -1,4 +1,5 @@
 import html
+from typing import Dict
 
 import streamlit as st
 
@@ -7,14 +8,14 @@ st.set_page_config(page_title="현재 예상점수", page_icon="🎯", layout="w
 SUBJECTS = ["국어", "수학", "영어", "과학", "사회"]
 
 
-def init_state():
-    defaults = {"mock_scores": [], "wrong_questions": []}
-    for key, value in defaults.items():
-        if key not in st.session_state or not isinstance(st.session_state[key], list):
-            st.session_state[key] = value.copy()
+def init_state() -> None:
+    if "mock_scores" not in st.session_state or not isinstance(st.session_state.mock_scores, list):
+        st.session_state.mock_scores = []
+    if "wrong_questions" not in st.session_state or not isinstance(st.session_state.wrong_questions, list):
+        st.session_state.wrong_questions = []
 
 
-def unresolved_count(subject):
+def unresolved_count(subject: str) -> int:
     return sum(
         1
         for item in st.session_state.wrong_questions
@@ -22,9 +23,13 @@ def unresolved_count(subject):
     )
 
 
-def calculate(subject):
+def calculate(subject: str) -> Dict[str, float]:
     records = sorted(st.session_state.mock_scores, key=lambda item: str(item.get("날짜", "")))
-    values = [float(item[subject]) for item in records if isinstance(item.get(subject), (int, float))]
+    values = [
+        float(item[subject])
+        for item in records
+        if isinstance(item.get(subject), (int, float))
+    ]
     recent = values[-3:]
     average = sum(recent) / len(recent) if recent else 70.0
     trend = recent[-1] - recent[-2] if len(recent) >= 2 else 0.0
@@ -58,28 +63,38 @@ st.subheader("과목별 비교")
 for result in results:
     col1, col2 = st.columns([1, 5])
     col1.markdown(f"**{result['과목']}**")
-    col2.progress(result["현재 예상점수"] / 100, text=f"{result['현재 예상점수']:.1f}점")
+    col2.progress(
+        result["현재 예상점수"] / 100,
+        text=f"{result['현재 예상점수']:.1f}점",
+    )
 
 st.subheader("계산 결과")
-head = "".join(f"<th>{title}</th>" for title in ["과목", "최근 3회 평균", "최근 추세", "미해결 오답", "현재 예상점수"])
+head = "".join(
+    f"<th>{title}</th>"
+    for title in ["과목", "최근 3회 평균", "최근 추세", "미해결 오답", "현재 예상점수"]
+)
 rows = []
 for result in results:
     values = [
-        result["과목"],
+        str(result["과목"]),
         f"{result['최근 3회 평균']:.1f}",
         f"{result['최근 추세']:+.1f}",
         str(result["미해결 오답"]),
         f"{result['현재 예상점수']:.1f}",
     ]
     rows.append("<tr>" + "".join(f"<td>{html.escape(value)}</td>" for value in values) + "</tr>")
+
 st.markdown(
     f"""
     <style>
-    .prediction-table {{width:100%; border-collapse:collapse;}}
+    .prediction-scroll {{overflow-x:auto;}}
+    .prediction-table {{width:100%; min-width:680px; border-collapse:collapse;}}
     .prediction-table th, .prediction-table td {{border:1px solid #d6dee2; padding:9px; text-align:center;}}
     .prediction-table th {{background:#f2f6f7;}}
     </style>
+    <div class="prediction-scroll">
     <table class="prediction-table"><thead><tr>{head}</tr></thead><tbody>{''.join(rows)}</tbody></table>
+    </div>
     """,
     unsafe_allow_html=True,
 )
@@ -89,10 +104,18 @@ strongest = max(results, key=lambda item: item["현재 예상점수"])
 
 col1, col2 = st.columns(2)
 with col1:
-    st.warning(f"우선 보완 과목: **{weakest['과목']}** · 예상 {weakest['현재 예상점수']:.1f}점 · 미해결 {weakest['미해결 오답']}개")
+    st.warning(
+        f"우선 보완 과목: **{weakest['과목']}** · 예상 {weakest['현재 예상점수']:.1f}점 · "
+        f"미해결 {weakest['미해결 오답']}개"
+    )
 with col2:
-    st.success(f"현재 강점 과목: **{strongest['과목']}** · 예상 {strongest['현재 예상점수']:.1f}점")
+    st.success(
+        f"현재 강점 과목: **{strongest['과목']}** · 예상 {strongest['현재 예상점수']:.1f}점"
+    )
 
-st.info("계산식: 최근 3회 평균 + 최근 점수 변화의 35% − 미해결 오답 1개당 0.8점(최대 12점). 실제 시험 점수를 보장하는 공식은 아닙니다.")
+st.info(
+    "계산식: 최근 3회 평균 + 최근 점수 변화의 35% − 미해결 오답 1개당 0.8점(최대 12점). "
+    "실제 시험 점수를 보장하는 공식은 아닙니다."
+)
 if not st.session_state.mock_scores:
     st.warning("모의고사 성적이 없어 기본값 70점을 사용했습니다. 성적을 입력하면 결과가 달라집니다.")
