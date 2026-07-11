@@ -1,0 +1,74 @@
+import streamlit as st
+
+from app_utils import (
+    dataframe_to_csv_bytes,
+    display_comment_table,
+    init_session_state,
+    render_video_summary,
+    require_comments,
+)
+
+st.set_page_config(page_title="댓글 검색", page_icon="🔎", layout="wide")
+init_session_state()
+
+st.title("🔎 댓글 검색과 필터")
+st.write("댓글 내용, 작성자, 좋아요 수, 답글 수를 조합해 원하는 댓글을 찾습니다.")
+
+if require_comments():
+    render_video_summary()
+    df = st.session_state["comments_df"].copy()
+
+    first, second = st.columns(2)
+    with first:
+        keyword = st.text_input("댓글 키워드", placeholder="예: 재미있다")
+        min_likes = st.number_input("최소 좋아요 수", min_value=0, value=0, step=1)
+    with second:
+        author_keyword = st.text_input("작성자 이름", placeholder="작성자 이름 일부")
+        min_replies = st.number_input("최소 답글 수", min_value=0, value=0, step=1)
+
+    filtered_df = df.copy()
+    if keyword.strip():
+        filtered_df = filtered_df[
+            filtered_df["comment"].str.contains(
+                keyword.strip(), case=False, na=False, regex=False
+            )
+        ]
+    if author_keyword.strip():
+        filtered_df = filtered_df[
+            filtered_df["author"].str.contains(
+                author_keyword.strip(), case=False, na=False, regex=False
+            )
+        ]
+
+    filtered_df = filtered_df[
+        (filtered_df["like_count"] >= int(min_likes))
+        & (filtered_df["reply_count"] >= int(min_replies))
+    ]
+
+    sort_label = st.selectbox(
+        "검색 결과 정렬",
+        ["좋아요 많은 순", "답글 많은 순", "최신순", "오래된 순"],
+    )
+    if sort_label == "좋아요 많은 순":
+        filtered_df = filtered_df.sort_values(
+            ["like_count", "reply_count"], ascending=False
+        )
+    elif sort_label == "답글 많은 순":
+        filtered_df = filtered_df.sort_values(
+            ["reply_count", "like_count"], ascending=False
+        )
+    elif sort_label == "최신순":
+        filtered_df = filtered_df.sort_values("published_at", ascending=False)
+    else:
+        filtered_df = filtered_df.sort_values("published_at", ascending=True)
+
+    st.metric("검색 결과", f"{len(filtered_df):,}개")
+    display_comment_table(filtered_df, "filtered_comments_table")
+    st.download_button(
+        "검색 결과 CSV 다운로드",
+        data=dataframe_to_csv_bytes(filtered_df),
+        file_name=f"filtered_comments_{st.session_state['video_details'].get('video_id', 'video')}.csv",
+        mime="text/csv",
+        use_container_width=True,
+        disabled=filtered_df.empty,
+    )
