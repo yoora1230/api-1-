@@ -2,6 +2,7 @@ import csv
 import html
 import io
 from datetime import date
+from typing import List
 
 import streamlit as st
 
@@ -10,52 +11,65 @@ st.set_page_config(page_title="모의고사 성적", page_icon="📊", layout="w
 SUBJECTS = ["국어", "수학", "영어", "과학", "사회"]
 
 
-def init_state():
+def init_state() -> None:
     if "mock_scores" not in st.session_state or not isinstance(st.session_state.mock_scores, list):
         st.session_state.mock_scores = []
 
 
-def score_csv(records):
+def score_csv(records: List[dict]) -> bytes:
     output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=["날짜", "시험명", *SUBJECTS])
+    fields = ["날짜", "시험명", *SUBJECTS]
+    writer = csv.DictWriter(output, fieldnames=fields)
     writer.writeheader()
     for record in records:
-        writer.writerow({key: record.get(key, "") for key in writer.fieldnames})
+        writer.writerow({key: record.get(key, "") for key in fields})
     return output.getvalue().encode("utf-8-sig")
 
 
-def sparkline(values):
+def sparkline(values: List[float]) -> str:
     if not values:
         return "-"
     blocks = "▁▂▃▄▅▆▇█"
     low, high = min(values), max(values)
     if low == high:
         return blocks[3] * len(values)
-    return "".join(blocks[round((value - low) / (high - low) * (len(blocks) - 1))] for value in values)
+    return "".join(
+        blocks[round((value - low) / (high - low) * (len(blocks) - 1))]
+        for value in values
+    )
 
 
-def render_table(records):
+def render_table(records: List[dict]) -> None:
     headers = ["날짜", "시험명", *SUBJECTS, "평균"]
     head_html = "".join(f"<th>{html.escape(header)}</th>" for header in headers)
     body_rows = []
     for record in records:
         scores = [float(record.get(subject, 0)) for subject in SUBJECTS]
-        values = [record.get("날짜", ""), record.get("시험명", ""), *[f"{score:.0f}" for score in scores], f"{sum(scores)/len(scores):.1f}"]
-        body_rows.append("<tr>" + "".join(f"<td>{html.escape(str(value))}</td>" for value in values) + "</tr>")
+        values = [
+            record.get("날짜", ""),
+            record.get("시험명", ""),
+            *[f"{score:.0f}" for score in scores],
+            f"{sum(scores) / len(scores):.1f}",
+        ]
+        body_rows.append(
+            "<tr>" + "".join(f"<td>{html.escape(str(value))}</td>" for value in values) + "</tr>"
+        )
     st.markdown(
-        f"<table class='score-table'><thead><tr>{head_html}</tr></thead><tbody>{''.join(body_rows)}</tbody></table>",
+        f"<div class='score-scroll'><table class='score-table'><thead><tr>{head_html}</tr></thead>"
+        f"<tbody>{''.join(body_rows)}</tbody></table></div>",
         unsafe_allow_html=True,
     )
 
 
 init_state()
 st.title("📊 모의고사 성적")
-st.caption("시험별 점수를 입력하고 최근 변화와 평균을 확인합니다.")
+st.caption("시험별 점수를 입력하면 계획표의 과목 우선순위와 현재 예상점수에 반영됩니다.")
 
 st.markdown(
     """
     <style>
-    .score-table {width:100%; border-collapse:collapse; margin-top:10px;}
+    .score-scroll {overflow-x:auto;}
+    .score-table {width:100%; min-width:760px; border-collapse:collapse; margin-top:10px;}
     .score-table th, .score-table td {border:1px solid #d6dee2; padding:9px; text-align:center;}
     .score-table th {background:#f2f6f7;}
     </style>
@@ -74,17 +88,30 @@ with st.form("score_form", clear_on_submit=True):
     scores = {}
     for index, subject in enumerate(SUBJECTS):
         with score_columns[index]:
-            scores[subject] = st.number_input(subject, min_value=0, max_value=100, value=70, step=1)
+            scores[subject] = st.number_input(
+                subject,
+                min_value=0,
+                max_value=100,
+                value=70,
+                step=1,
+            )
 
     submitted = st.form_submit_button("성적 저장", type="primary")
 
 if submitted:
     st.session_state.mock_scores.append(
-        {"날짜": exam_date.isoformat(), "시험명": exam_name.strip() or "이름 없는 시험", **{subject: int(scores[subject]) for subject in SUBJECTS}}
+        {
+            "날짜": exam_date.isoformat(),
+            "시험명": exam_name.strip() or "이름 없는 시험",
+            **{subject: int(scores[subject]) for subject in SUBJECTS},
+        }
     )
     st.success("성적을 저장했습니다.")
 
-records = sorted(st.session_state.mock_scores, key=lambda item: (str(item.get("날짜", "")), str(item.get("시험명", ""))))
+records = sorted(
+    st.session_state.mock_scores,
+    key=lambda item: (str(item.get("날짜", "")), str(item.get("시험명", ""))),
+)
 
 if not records:
     st.info("아직 입력한 성적이 없습니다.")
@@ -93,12 +120,13 @@ else:
     previous = records[-2] if len(records) >= 2 else None
     metric_columns = st.columns(len(SUBJECTS) + 1)
     latest_scores = []
+
     for index, subject in enumerate(SUBJECTS):
         value = float(latest.get(subject, 0))
         latest_scores.append(value)
         delta = None if previous is None else f"{value - float(previous.get(subject, 0)):+.0f}점"
         metric_columns[index].metric(subject, f"{value:.0f}점", delta)
-    metric_columns[-1].metric("평균", f"{sum(latest_scores)/len(latest_scores):.1f}점")
+    metric_columns[-1].metric("평균", f"{sum(latest_scores) / len(latest_scores):.1f}점")
 
     st.subheader("과목별 점수 흐름")
     trend_columns = st.columns(len(SUBJECTS))
@@ -114,8 +142,14 @@ else:
 
     col1, col2 = st.columns(2)
     with col1:
-        st.download_button("성적 CSV 다운로드", data=score_csv(records), file_name="모의고사_성적.csv", mime="text/csv")
+        st.download_button(
+            "성적 CSV 다운로드",
+            data=score_csv(records),
+            file_name="모의고사_성적.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
     with col2:
-        if st.button("가장 최근 성적 삭제"):
+        if st.button("가장 최근 성적 삭제", use_container_width=True):
             st.session_state.mock_scores = records[:-1]
             st.rerun()
