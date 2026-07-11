@@ -1,0 +1,89 @@
+import streamlit as st
+
+from app_utils import (
+    classify_comments,
+    dataframe_to_csv_bytes,
+    display_comment_table,
+    init_session_state,
+    render_video_summary,
+    require_comments,
+)
+
+st.set_page_config(page_title="좋아요 많은 댓글", page_icon="🔥", layout="wide")
+init_session_state()
+
+st.title("🔥 좋아요 많은 댓글 분류")
+st.write("좋아요 수 기준을 직접 정해 일반 댓글, 인기 댓글, 최상위 댓글로 나눕니다.")
+
+if require_comments():
+    render_video_summary()
+
+    df = st.session_state["comments_df"].copy()
+    settings_col1, settings_col2 = st.columns(2)
+    with settings_col1:
+        popular_threshold = st.number_input(
+            "인기 댓글 최소 좋아요 수",
+            min_value=1,
+            value=10,
+            step=1,
+        )
+    with settings_col2:
+        top_threshold_input = st.number_input(
+            "최상위 댓글 최소 좋아요 수",
+            min_value=2,
+            value=100,
+            step=1,
+        )
+
+    top_threshold = int(top_threshold_input)
+    if top_threshold <= int(popular_threshold):
+        top_threshold = int(popular_threshold) + 1
+        st.info(
+            f"최상위 댓글 기준은 인기 댓글 기준보다 커야 하므로 {top_threshold}개로 적용했습니다."
+        )
+
+    classified_df = classify_comments(
+        df,
+        popular_threshold=int(popular_threshold),
+        top_threshold=top_threshold,
+    ).sort_values(["like_count", "reply_count"], ascending=False)
+
+    top_df = classified_df[classified_df["category"] == "🔥 최상위 댓글"]
+    popular_df = classified_df[classified_df["category"] == "⭐ 인기 댓글"]
+    normal_df = classified_df[classified_df["category"] == "일반 댓글"]
+    selected_df = classified_df[classified_df["like_count"] >= int(popular_threshold)]
+
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("전체", f"{len(classified_df):,}개")
+    metric_cols[1].metric("최상위", f"{len(top_df):,}개")
+    metric_cols[2].metric("인기", f"{len(popular_df):,}개")
+    metric_cols[3].metric("일반", f"{len(normal_df):,}개")
+
+    category_counts = (
+        classified_df["category"]
+        .value_counts()
+        .reindex(["🔥 최상위 댓글", "⭐ 인기 댓글", "일반 댓글"], fill_value=0)
+        .rename("댓글 수")
+    )
+    st.bar_chart(category_counts)
+
+    top_tab, popular_tab, selected_tab, all_tab = st.tabs(
+        ["🔥 최상위 댓글", "⭐ 인기 댓글", "인기 이상 전체", "전체 분류 결과"]
+    )
+    with top_tab:
+        display_comment_table(top_df, "top_comments_table")
+    with popular_tab:
+        display_comment_table(popular_df, "popular_comments_table")
+    with selected_tab:
+        display_comment_table(selected_df, "selected_comments_table")
+    with all_tab:
+        display_comment_table(classified_df, "classified_comments_table")
+
+    st.download_button(
+        "인기 댓글만 CSV 다운로드",
+        data=dataframe_to_csv_bytes(selected_df),
+        file_name=f"popular_comments_{st.session_state['video_details'].get('video_id', 'video')}.csv",
+        mime="text/csv",
+        use_container_width=True,
+        disabled=selected_df.empty,
+    )
