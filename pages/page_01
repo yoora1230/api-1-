@@ -1,71 +1,214 @@
-import pandas as pd
+import calendar
+import csv
+import html
+import io
+from datetime import date, timedelta
+
 import streamlit as st
 
-from app_utils import (
-    dataframe_to_csv_bytes,
-    display_comment_table,
-    has_comments,
-    init_session_state,
-    render_api_status,
-    render_comment_loader,
-    render_video_summary,
+st.set_page_config(page_title="날짜별 계획표", page_icon="🗓️", layout="wide")
+
+SUBJECTS = ["국어", "수학", "영어", "과학", "사회"]
+WEEKDAY_KO = ["월", "화", "수", "목", "금", "토", "일"]
+
+TASK_BANK = {
+    "국어": ["개념·작품 정리", "문법 복습", "지문 문제 풀이", "선지 근거 확인", "오답 정리"],
+    "수학": ["개념·공식 정리", "대표 예제 풀이", "유형 문제 풀이", "고난도 문제", "오답 재풀이"],
+    "영어": ["본문·단어 암기", "문법 정리", "독해 문제 풀이", "서술형 연습", "오답 복습"],
+    "과학": ["개념·용어 정리", "그림·표 해석", "유형 문제 풀이", "계산·추론 문제", "오답 복습"],
+    "사회": ["핵심 개념 정리", "용어·사례 암기", "자료 분석 문제", "서술형 연습", "오답 복습"],
+}
+
+
+def init_state():
+    defaults = {"mock_scores": [], "wrong_questions": [], "study_plan": []}
+    for key, value in defaults.items():
+        if key not in st.session_state or not isinstance(st.session_state[key], list):
+            st.session_state[key] = value.copy()
+
+
+def latest_scores():
+    result = {subject: 70.0 for subject in SUBJECTS}
+    records = sorted(st.session_state.mock_scores, key=lambda item: str(item.get("날짜", "")))
+    for subject in SUBJECTS:
+        values = [item.get(subject) for item in records if isinstance(item.get(subject), (int, float))]
+        if values:
+            result[subject] = float(values[-1])
+    return result
+
+
+def unresolved_counts():
+    result = {subject: 0 for subject in SUBJECTS}
+    for item in st.session_state.wrong_questions:
+        subject = item.get("과목")
+        if subject in result and not bool(item.get("해결", False)):
+            result[subject] += 1
+    return result
+
+
+def make_subject_cycle(selected_subjects):
+    scores = latest_scores()
+    wrongs = unresolved_counts()
+    priorities = {
+        subject: max(1.0, 100.0 - scores[subject] + wrongs[subject] * 4.0)
+        for subject in selected_subjects
+    }
+    ordered = sorted(selected_subjects, key=lambda subject: (-priorities[subject], SUBJECTS.index(subject)))
+    if not ordered:
+        return []
+
+    values = [priorities[subject] for subject in ordered]
+    low, high = min(values), max(values)
+    cycle = []
+    for subject in ordered:
+        if high == low:
+            repeat = 1
+        else:
+            repeat = 1 + round((priorities[subject] - low) / (high - low) * 2)
+        cycle.extend([subject] * repeat)
+    return cycle
+
+
+def build_plan(start_date, end_date, selected_subjects, tasks_per_day, consecutive_days, include_weekends):
+    study_dates = []
+    current = start_date
+    while current <= end_date:
+        if include_weekends or current.weekday() < 5:
+            study_dates.append(current)
+        current += timedelta(days=1)
+
+    cycle = make_subject_cycle(selected_subjects)
+    if not study_dates or not cycle:
+        return []
+
+    rows = []
+    for index, study_date in enumerate(study_dates):
+        block_index = index // consecutive_days
+        subject = cycle[block_index % len(cycle)]
+        tasks = TASK_BANK[subject][:tasks_per_day]
+        rows.append(
+            {
+                "날짜": study_date.isoformat(),
+                "요일": WEEKDAY_KO[study_date.weekday()],
+                "과목": subject,
+                "학습내용": tasks,
+            }
+        )
+    return rows
+
+
+def plan_to_csv(rows):
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["날짜", "요일", "과목", "학습1", "학습2", "학습3", "학습4", "학습5"])
+    for row in rows:
+        tasks = list(row.get("학습내용", []))
+        writer.writerow([row.get("날짜", ""), row.get("요일", ""), row.get("과목", ""), *(tasks + [""] * (5 - len(tasks)))])
+    return output.getvalue().encode("utf-8-sig")
+
+
+def render_month(year, month, plan_lookup):
+    cal = calendar.Calendar(firstweekday=6)
+    weeks = cal.monthdatescalendar(year, month)
+    header = "".join(f"<th>{day}</th>" for day in ["일", "월", "화", "수", "목", "금", "토"])
+    rows_html = []
+
+    for week in weeks:
+        cells = []
+        for current_date in week:
+            in_month = current_date.month == month
+            cell_class = "calendar-cell" if in_month else "calendar-cell other-month"
+            day_number = str(current_date.day) if in_month else ""
+            content = ""
+            item = plan_lookup.get(current_date.isoformat())
+            if in_month and item:
+                subject = html.escape(str(item.get("과목", "")))
+                tasks = "".join(f"<li>{html.escape(str(task))}</li>" for task in item.get("학습내용", []))
+                content = f'<div class="subject">{subject}</div><ul>{tasks}</ul>'
+            cells.append(f'<td class="{cell_class}"><div class="day-number">{day_number}</div>{content}</td>')
+        rows_html.append("<tr>" + "".join(cells) + "</tr>")
+
+    st.markdown(f"### {year}년 {month}월")
+    st.markdown(
+        f"""
+        <table class="calendar-table">
+            <thead><tr>{header}</tr></thead>
+            <tbody>{''.join(rows_html)}</tbody>
+        </table>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+init_state()
+st.title("🗓️ 날짜별 시험 계획표")
+st.caption("선택한 연속 일수 동안 같은 과목이 이어지도록 자동 배정합니다.")
+
+st.markdown(
+    """
+    <style>
+    .calendar-table {width:100%; border-collapse:collapse; table-layout:fixed; margin-bottom:28px;}
+    .calendar-table th {border:1px solid #cfd8dc; padding:8px; background:#f3f7f8; text-align:center;}
+    .calendar-cell {height:150px; border:1px solid #b0bec5; vertical-align:top; padding:7px; background:white;}
+    .calendar-cell.other-month {background:#f7f7f7;}
+    .day-number {font-weight:700; font-size:1.05rem; margin-bottom:5px;}
+    .calendar-cell:nth-child(1) .day-number {color:#d32f2f;}
+    .calendar-cell:nth-child(7) .day-number {color:#1976d2;}
+    .subject {display:inline-block; padding:2px 7px; border-radius:10px; background:#dff5f7; font-weight:700; margin-bottom:4px;}
+    .calendar-cell ul {padding-left:17px; margin:3px 0; font-size:0.84rem; line-height:1.35;}
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
-st.set_page_config(page_title="전체 댓글 분석", page_icon="📊", layout="wide")
-init_session_state()
+with st.form("planner_form"):
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        start_date = st.date_input("계획 시작일", value=date.today())
+        end_date = st.date_input("계획 종료일", value=date.today() + timedelta(days=27))
+    with col2:
+        selected_subjects = st.multiselect("공부할 과목", SUBJECTS, default=SUBJECTS)
+        tasks_per_day = st.slider("하루 학습 항목 수", 1, 5, 3)
+    with col3:
+        consecutive_days = st.slider("한 과목 연속 학습일", 1, 7, 3)
+        include_weekends = st.checkbox("주말도 공부", value=True)
+    submitted = st.form_submit_button("계획표 만들기", type="primary")
 
-st.title("📊 전체 댓글 분석")
-st.write("영상 URL을 입력해 공개된 최상위 댓글을 불러옵니다.")
-render_api_status()
-render_comment_loader("analysis")
-
-if has_comments():
-    st.divider()
-    render_video_summary()
-
-    df = st.session_state["comments_df"].copy()
-    total_comments = len(df)
-    average_likes = df["like_count"].mean() if total_comments else 0
-    max_likes = int(df["like_count"].max()) if total_comments else 0
-    total_replies = int(df["reply_count"].sum()) if total_comments else 0
-
-    metric_cols = st.columns(4)
-    metric_cols[0].metric("불러온 댓글", f"{total_comments:,}개")
-    metric_cols[1].metric("평균 좋아요", f"{average_likes:,.1f}개")
-    metric_cols[2].metric("최대 좋아요", f"{max_likes:,}개")
-    metric_cols[3].metric("답글 합계", f"{total_replies:,}개")
-
-    st.subheader("좋아요 분포")
-    bins = [-1, 0, 4, 9, 49, 99, 499, float("inf")]
-    labels = ["0", "1~4", "5~9", "10~49", "50~99", "100~499", "500+"]
-    bucket_series = pd.cut(df["like_count"], bins=bins, labels=labels)
-    chart_df = (
-        bucket_series.value_counts(sort=False)
-        .rename_axis("좋아요 구간")
-        .reset_index(name="댓글 수")
-        .set_index("좋아요 구간")
-    )
-    st.bar_chart(chart_df)
-
-    st.subheader("댓글 목록")
-    sort_label = st.selectbox(
-        "표 정렬",
-        ["좋아요 많은 순", "답글 많은 순", "최신순", "오래된 순"],
-    )
-    if sort_label == "좋아요 많은 순":
-        sorted_df = df.sort_values(["like_count", "reply_count"], ascending=False)
-    elif sort_label == "답글 많은 순":
-        sorted_df = df.sort_values(["reply_count", "like_count"], ascending=False)
-    elif sort_label == "최신순":
-        sorted_df = df.sort_values("published_at", ascending=False)
+if submitted:
+    if end_date < start_date:
+        st.error("종료일은 시작일보다 빠를 수 없습니다.")
+    elif not selected_subjects:
+        st.error("과목을 하나 이상 선택하세요.")
     else:
-        sorted_df = df.sort_values("published_at", ascending=True)
+        st.session_state.study_plan = build_plan(
+            start_date,
+            end_date,
+            selected_subjects,
+            tasks_per_day,
+            consecutive_days,
+            include_weekends,
+        )
+        st.success("계획표를 만들었습니다.")
 
-    display_comment_table(sorted_df, "all_comments_table")
+plan = st.session_state.study_plan
+if plan:
+    plan_lookup = {item["날짜"]: item for item in plan}
+    first = date.fromisoformat(plan[0]["날짜"])
+    last = date.fromisoformat(plan[-1]["날짜"])
+
+    year, month = first.year, first.month
+    while (year, month) <= (last.year, last.month):
+        render_month(year, month, plan_lookup)
+        if month == 12:
+            year, month = year + 1, 1
+        else:
+            month += 1
+
     st.download_button(
-        "전체 댓글 CSV 다운로드",
-        data=dataframe_to_csv_bytes(sorted_df),
-        file_name=f"youtube_comments_{st.session_state['video_details'].get('video_id', 'video')}.csv",
+        "계획표 CSV 다운로드",
+        data=plan_to_csv(plan),
+        file_name="시험_계획표.csv",
         mime="text/csv",
-        use_container_width=True,
     )
+else:
+    st.info("조건을 입력하고 계획표 만들기를 누르세요.")
