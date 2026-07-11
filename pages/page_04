@@ -1,0 +1,48 @@
+import streamlit as st
+
+from app_utils import init_session_state, render_api_status
+
+st.set_page_config(page_title="사용 안내", page_icon="⚙️", layout="wide")
+init_session_state()
+
+st.title("⚙️ 사용 안내")
+
+st.subheader("1. Google Cloud에서 API 준비")
+st.markdown(
+    """
+1. Google Cloud Console에서 프로젝트를 만듭니다.
+2. **YouTube Data API v3**를 활성화합니다.
+3. API 키를 발급합니다.
+4. 보안을 위해 가능하면 API 제한에서 YouTube Data API v3만 허용합니다.
+    """
+)
+
+st.subheader("2. Streamlit Secrets 설정")
+st.write("Streamlit Community Cloud의 앱 화면에서 Settings → Secrets에 아래 형식으로 입력합니다.")
+st.code(
+    '[google]\nyoutube_api_key = "YOUR_YOUTUBE_API_KEY"',
+    language="toml",
+)
+st.warning("실제 API 키가 들어간 secrets.toml 파일은 GitHub에 올리지 마세요.")
+render_api_status()
+
+st.subheader("3. 사이트 사용")
+st.markdown(
+    """
+- **전체 댓글 분석**에서 영상 URL과 최대 댓글 수를 선택합니다.
+- 댓글을 불러온 뒤 **좋아요 많은 댓글**에서 분류 기준을 정합니다.
+- **댓글 검색**에서 키워드나 최소 좋아요 수로 결과를 좁힙니다.
+- 각 페이지의 다운로드 버튼으로 CSV 파일을 저장합니다.
+    """
+)
+
+st.subheader("알아둘 점")
+st.markdown(
+    """
+- 현재 코드는 댓글 스레드의 **최상위 댓글**을 분석합니다.
+- YouTube API가 제공하는 댓글 순서는 관련도순 또는 최신순입니다.
+- 댓글이 중지된 영상, 비공개 영상, 삭제된 댓글은 가져올 수 없습니다.
+- 영상 댓글이 매우 많으면 설정한 최대 개수까지만 수집합니다.
+- API 사용량을 줄이려면 처음에는 100~500개로 시험하는 것이 좋습니다.
+    """
+)
