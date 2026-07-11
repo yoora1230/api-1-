@@ -1,89 +1,121 @@
+import csv
+import html
+import io
+from datetime import date
+
 import streamlit as st
 
-from app_utils import (
-    classify_comments,
-    dataframe_to_csv_bytes,
-    display_comment_table,
-    init_session_state,
-    render_video_summary,
-    require_comments,
+st.set_page_config(page_title="모의고사 성적", page_icon="📊", layout="wide")
+
+SUBJECTS = ["국어", "수학", "영어", "과학", "사회"]
+
+
+def init_state():
+    if "mock_scores" not in st.session_state or not isinstance(st.session_state.mock_scores, list):
+        st.session_state.mock_scores = []
+
+
+def score_csv(records):
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=["날짜", "시험명", *SUBJECTS])
+    writer.writeheader()
+    for record in records:
+        writer.writerow({key: record.get(key, "") for key in writer.fieldnames})
+    return output.getvalue().encode("utf-8-sig")
+
+
+def sparkline(values):
+    if not values:
+        return "-"
+    blocks = "▁▂▃▄▅▆▇█"
+    low, high = min(values), max(values)
+    if low == high:
+        return blocks[3] * len(values)
+    return "".join(blocks[round((value - low) / (high - low) * (len(blocks) - 1))] for value in values)
+
+
+def render_table(records):
+    headers = ["날짜", "시험명", *SUBJECTS, "평균"]
+    head_html = "".join(f"<th>{html.escape(header)}</th>" for header in headers)
+    body_rows = []
+    for record in records:
+        scores = [float(record.get(subject, 0)) for subject in SUBJECTS]
+        values = [record.get("날짜", ""), record.get("시험명", ""), *[f"{score:.0f}" for score in scores], f"{sum(scores)/len(scores):.1f}"]
+        body_rows.append("<tr>" + "".join(f"<td>{html.escape(str(value))}</td>" for value in values) + "</tr>")
+    st.markdown(
+        f"<table class='score-table'><thead><tr>{head_html}</tr></thead><tbody>{''.join(body_rows)}</tbody></table>",
+        unsafe_allow_html=True,
+    )
+
+
+init_state()
+st.title("📊 모의고사 성적")
+st.caption("시험별 점수를 입력하고 최근 변화와 평균을 확인합니다.")
+
+st.markdown(
+    """
+    <style>
+    .score-table {width:100%; border-collapse:collapse; margin-top:10px;}
+    .score-table th, .score-table td {border:1px solid #d6dee2; padding:9px; text-align:center;}
+    .score-table th {background:#f2f6f7;}
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
-st.set_page_config(page_title="좋아요 많은 댓글", page_icon="🔥", layout="wide")
-init_session_state()
+with st.form("score_form", clear_on_submit=True):
+    col1, col2 = st.columns(2)
+    with col1:
+        exam_date = st.date_input("시험 날짜", value=date.today())
+    with col2:
+        exam_name = st.text_input("시험명", placeholder="예: 6월 모의고사")
 
-st.title("🔥 좋아요 많은 댓글 분류")
-st.write("좋아요 수 기준을 직접 정해 일반 댓글, 인기 댓글, 최상위 댓글로 나눕니다.")
+    score_columns = st.columns(len(SUBJECTS))
+    scores = {}
+    for index, subject in enumerate(SUBJECTS):
+        with score_columns[index]:
+            scores[subject] = st.number_input(subject, min_value=0, max_value=100, value=70, step=1)
 
-if require_comments():
-    render_video_summary()
+    submitted = st.form_submit_button("성적 저장", type="primary")
 
-    df = st.session_state["comments_df"].copy()
-    settings_col1, settings_col2 = st.columns(2)
-    with settings_col1:
-        popular_threshold = st.number_input(
-            "인기 댓글 최소 좋아요 수",
-            min_value=1,
-            value=10,
-            step=1,
-        )
-    with settings_col2:
-        top_threshold_input = st.number_input(
-            "최상위 댓글 최소 좋아요 수",
-            min_value=2,
-            value=100,
-            step=1,
-        )
-
-    top_threshold = int(top_threshold_input)
-    if top_threshold <= int(popular_threshold):
-        top_threshold = int(popular_threshold) + 1
-        st.info(
-            f"최상위 댓글 기준은 인기 댓글 기준보다 커야 하므로 {top_threshold}개로 적용했습니다."
-        )
-
-    classified_df = classify_comments(
-        df,
-        popular_threshold=int(popular_threshold),
-        top_threshold=top_threshold,
-    ).sort_values(["like_count", "reply_count"], ascending=False)
-
-    top_df = classified_df[classified_df["category"] == "🔥 최상위 댓글"]
-    popular_df = classified_df[classified_df["category"] == "⭐ 인기 댓글"]
-    normal_df = classified_df[classified_df["category"] == "일반 댓글"]
-    selected_df = classified_df[classified_df["like_count"] >= int(popular_threshold)]
-
-    metric_cols = st.columns(4)
-    metric_cols[0].metric("전체", f"{len(classified_df):,}개")
-    metric_cols[1].metric("최상위", f"{len(top_df):,}개")
-    metric_cols[2].metric("인기", f"{len(popular_df):,}개")
-    metric_cols[3].metric("일반", f"{len(normal_df):,}개")
-
-    category_counts = (
-        classified_df["category"]
-        .value_counts()
-        .reindex(["🔥 최상위 댓글", "⭐ 인기 댓글", "일반 댓글"], fill_value=0)
-        .rename("댓글 수")
+if submitted:
+    st.session_state.mock_scores.append(
+        {"날짜": exam_date.isoformat(), "시험명": exam_name.strip() or "이름 없는 시험", **{subject: int(scores[subject]) for subject in SUBJECTS}}
     )
-    st.bar_chart(category_counts)
+    st.success("성적을 저장했습니다.")
 
-    top_tab, popular_tab, selected_tab, all_tab = st.tabs(
-        ["🔥 최상위 댓글", "⭐ 인기 댓글", "인기 이상 전체", "전체 분류 결과"]
-    )
-    with top_tab:
-        display_comment_table(top_df, "top_comments_table")
-    with popular_tab:
-        display_comment_table(popular_df, "popular_comments_table")
-    with selected_tab:
-        display_comment_table(selected_df, "selected_comments_table")
-    with all_tab:
-        display_comment_table(classified_df, "classified_comments_table")
+records = sorted(st.session_state.mock_scores, key=lambda item: (str(item.get("날짜", "")), str(item.get("시험명", ""))))
 
-    st.download_button(
-        "인기 댓글만 CSV 다운로드",
-        data=dataframe_to_csv_bytes(selected_df),
-        file_name=f"popular_comments_{st.session_state['video_details'].get('video_id', 'video')}.csv",
-        mime="text/csv",
-        use_container_width=True,
-        disabled=selected_df.empty,
-    )
+if not records:
+    st.info("아직 입력한 성적이 없습니다.")
+else:
+    latest = records[-1]
+    previous = records[-2] if len(records) >= 2 else None
+    metric_columns = st.columns(len(SUBJECTS) + 1)
+    latest_scores = []
+    for index, subject in enumerate(SUBJECTS):
+        value = float(latest.get(subject, 0))
+        latest_scores.append(value)
+        delta = None if previous is None else f"{value - float(previous.get(subject, 0)):+.0f}점"
+        metric_columns[index].metric(subject, f"{value:.0f}점", delta)
+    metric_columns[-1].metric("평균", f"{sum(latest_scores)/len(latest_scores):.1f}점")
+
+    st.subheader("과목별 점수 흐름")
+    trend_columns = st.columns(len(SUBJECTS))
+    for index, subject in enumerate(SUBJECTS):
+        values = [float(record.get(subject, 0)) for record in records]
+        with trend_columns[index]:
+            st.markdown(f"**{subject}**")
+            st.code(sparkline(values), language=None)
+            st.caption(" → ".join(f"{value:.0f}" for value in values[-5:]))
+
+    st.subheader("전체 기록")
+    render_table(records)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.download_button("성적 CSV 다운로드", data=score_csv(records), file_name="모의고사_성적.csv", mime="text/csv")
+    with col2:
+        if st.button("가장 최근 성적 삭제"):
+            st.session_state.mock_scores = records[:-1]
+            st.rerun()
