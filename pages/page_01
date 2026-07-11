@@ -3,6 +3,7 @@ import csv
 import html
 import io
 from datetime import date, timedelta
+from typing import Dict, List
 
 import streamlit as st
 
@@ -10,34 +11,65 @@ st.set_page_config(page_title="날짜별 계획표", page_icon="🗓️", layout
 
 SUBJECTS = ["국어", "수학", "영어", "과학", "사회"]
 WEEKDAY_KO = ["월", "화", "수", "목", "금", "토", "일"]
-
-TASK_BANK = {
-    "국어": ["개념·작품 정리", "문법 복습", "지문 문제 풀이", "선지 근거 확인", "오답 정리"],
-    "수학": ["개념·공식 정리", "대표 예제 풀이", "유형 문제 풀이", "고난도 문제", "오답 재풀이"],
-    "영어": ["본문·단어 암기", "문법 정리", "독해 문제 풀이", "서술형 연습", "오답 복습"],
-    "과학": ["개념·용어 정리", "그림·표 해석", "유형 문제 풀이", "계산·추론 문제", "오답 복습"],
-    "사회": ["핵심 개념 정리", "용어·사례 암기", "자료 분석 문제", "서술형 연습", "오답 복습"],
+RESOURCE_ORDER = ["교과서", "자습서", "문제집", "프린트"]
+RESOURCE_RULES = {
+    "교과서": {"chunk": 6, "unit": "쪽", "minutes": 25, "action": "읽고 핵심 개념 3개 표시"},
+    "자습서": {"chunk": 5, "unit": "쪽", "minutes": 30, "action": "개념 설명을 확인하고 예제까지 풀기"},
+    "문제집": {"chunk": 4, "unit": "쪽", "minutes": 40, "action": "문제를 풀고 채점한 뒤 틀린 번호 기록"},
+    "프린트": {"chunk": 2, "unit": "번", "minutes": 25, "action": "풀고 채점한 뒤 틀린 문제에 별표 표시"},
+}
+DEFAULT_RANGES = {
+    "교과서": (1, 30),
+    "자습서": (1, 30),
+    "문제집": (1, 40),
+    "프린트": (1, 8),
+}
+RESOURCE_COLORS = {
+    "교과서": "#e8f1ff",
+    "자습서": "#e9f8ef",
+    "문제집": "#fff3df",
+    "프린트": "#f3eaff",
+    "오답": "#ffe9e9",
+    "복습": "#eef0f2",
 }
 
 
-def init_state():
-    defaults = {"mock_scores": [], "wrong_questions": [], "study_plan": []}
-    for key, value in defaults.items():
-        if key not in st.session_state or not isinstance(st.session_state[key], list):
-            st.session_state[key] = value.copy()
+def init_state() -> None:
+    defaults = {
+        "mock_scores": [],
+        "wrong_questions": [],
+        "study_plan": [],
+        "study_materials": {},
+    }
+    for key, default in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = default.copy() if hasattr(default, "copy") else default
+
+    if not isinstance(st.session_state.mock_scores, list):
+        st.session_state.mock_scores = []
+    if not isinstance(st.session_state.wrong_questions, list):
+        st.session_state.wrong_questions = []
+    if not isinstance(st.session_state.study_plan, list):
+        st.session_state.study_plan = []
+    if not isinstance(st.session_state.study_materials, dict):
+        st.session_state.study_materials = {}
 
 
-def latest_scores():
+def latest_scores() -> Dict[str, float]:
     result = {subject: 70.0 for subject in SUBJECTS}
     records = sorted(st.session_state.mock_scores, key=lambda item: str(item.get("날짜", "")))
     for subject in SUBJECTS:
-        values = [item.get(subject) for item in records if isinstance(item.get(subject), (int, float))]
+        values = [
+            float(item[subject])
+            for item in records
+            if isinstance(item.get(subject), (int, float))
+        ]
         if values:
-            result[subject] = float(values[-1])
+            result[subject] = values[-1]
     return result
 
 
-def unresolved_counts():
+def unresolved_counts() -> Dict[str, int]:
     result = {subject: 0 for subject in SUBJECTS}
     for item in st.session_state.wrong_questions:
         subject = item.get("과목")
@@ -46,68 +78,176 @@ def unresolved_counts():
     return result
 
 
-def make_subject_cycle(selected_subjects):
+def subject_priorities(selected_subjects: List[str]) -> Dict[str, float]:
     scores = latest_scores()
     wrongs = unresolved_counts()
-    priorities = {
+    return {
         subject: max(1.0, 100.0 - scores[subject] + wrongs[subject] * 4.0)
         for subject in selected_subjects
     }
-    ordered = sorted(selected_subjects, key=lambda subject: (-priorities[subject], SUBJECTS.index(subject)))
-    if not ordered:
+
+
+def choose_block_subjects(selected_subjects: List[str], block_count: int) -> List[str]:
+    """약한 과목을 더 자주 배정하되 같은 과목 블록이 바로 이어지지 않게 한다."""
+    if not selected_subjects or block_count <= 0:
         return []
+    if len(selected_subjects) == 1:
+        return [selected_subjects[0]] * block_count
 
-    values = [priorities[subject] for subject in ordered]
-    low, high = min(values), max(values)
-    cycle = []
-    for subject in ordered:
-        if high == low:
-            repeat = 1
-        else:
-            repeat = 1 + round((priorities[subject] - low) / (high - low) * 2)
-        cycle.extend([subject] * repeat)
-    return cycle
+    priorities = subject_priorities(selected_subjects)
+    assigned = {subject: 0 for subject in selected_subjects}
+    result: List[str] = []
+    last_subject = None
+
+    for _ in range(block_count):
+        candidates = [subject for subject in selected_subjects if subject != last_subject]
+        subject = max(
+            candidates,
+            key=lambda item: (
+                priorities[item] / (assigned[item] + 1),
+                priorities[item],
+                -SUBJECTS.index(item),
+            ),
+        )
+        result.append(subject)
+        assigned[subject] += 1
+        last_subject = subject
+    return result
 
 
-def build_plan(start_date, end_date, selected_subjects, tasks_per_day, consecutive_days, include_weekends):
-    study_dates = []
+def split_range(start: int, end: int, chunk_size: int) -> List[tuple]:
+    if start > end:
+        return []
+    ranges = []
+    current = start
+    while current <= end:
+        last = min(end, current + chunk_size - 1)
+        ranges.append((current, last))
+        current = last + 1
+    return ranges
+
+
+def task_text(subject: str, unit_name: str, resource: str, first: int, last: int) -> str:
+    rule = RESOURCE_RULES[resource]
+    range_text = f"{first}{rule['unit']}" if first == last else f"{first}~{last}{rule['unit']}"
+    unit_prefix = f"[{unit_name}] " if unit_name.strip() else ""
+    return (
+        f"{unit_prefix}{resource} {range_text} {rule['action']} "
+        f"(약 {rule['minutes']}분)"
+    )
+
+
+def build_resource_queues(subject: str, config: dict) -> Dict[str, List[str]]:
+    queues: Dict[str, List[str]] = {resource: [] for resource in RESOURCE_ORDER}
+    unit_name = str(config.get("단원", "")).strip()
+
+    for resource in RESOURCE_ORDER:
+        item = config.get(resource, {})
+        if not bool(item.get("사용", True)):
+            continue
+        start = int(item.get("시작", 1))
+        end = int(item.get("끝", start))
+        for first, last in split_range(start, end, RESOURCE_RULES[resource]["chunk"]):
+            queues[resource].append(task_text(subject, unit_name, resource, first, last))
+    return queues
+
+
+def build_plan(
+    start_date: date,
+    end_date: date,
+    selected_subjects: List[str],
+    tasks_per_day: int,
+    consecutive_days: int,
+    include_weekends: bool,
+    material_configs: Dict[str, dict],
+) -> List[dict]:
+    study_dates: List[date] = []
     current = start_date
     while current <= end_date:
         if include_weekends or current.weekday() < 5:
             study_dates.append(current)
         current += timedelta(days=1)
 
-    cycle = make_subject_cycle(selected_subjects)
-    if not study_dates or not cycle:
+    if not study_dates or not selected_subjects:
         return []
 
-    rows = []
+    block_count = (len(study_dates) + consecutive_days - 1) // consecutive_days
+    block_subjects = choose_block_subjects(selected_subjects, block_count)
+
+    queues = {
+        subject: build_resource_queues(subject, material_configs[subject])
+        for subject in selected_subjects
+    }
+    positions = {
+        subject: {resource: 0 for resource in RESOURCE_ORDER}
+        for subject in selected_subjects
+    }
+    resource_rotation = {subject: 0 for subject in selected_subjects}
+    wrongs = unresolved_counts()
+    rows: List[dict] = []
+
     for index, study_date in enumerate(study_dates):
-        block_index = index // consecutive_days
-        subject = cycle[block_index % len(cycle)]
-        tasks = TASK_BANK[subject][:tasks_per_day]
+        subject = block_subjects[index // consecutive_days]
+        day_tasks: List[dict] = []
+        attempts = 0
+
+        while len(day_tasks) < tasks_per_day and attempts < tasks_per_day * len(RESOURCE_ORDER) * 3:
+            resource_index = resource_rotation[subject] % len(RESOURCE_ORDER)
+            resource = RESOURCE_ORDER[resource_index]
+            resource_rotation[subject] += 1
+            attempts += 1
+
+            queue = queues[subject][resource]
+            position = positions[subject][resource]
+            if position < len(queue):
+                day_tasks.append({"자료": resource, "내용": queue[position]})
+                positions[subject][resource] += 1
+
+        if len(day_tasks) < tasks_per_day and wrongs.get(subject, 0) > 0:
+            remaining = tasks_per_day - len(day_tasks)
+            for number in range(remaining):
+                count = min(3, wrongs[subject])
+                day_tasks.append(
+                    {
+                        "자료": "오답",
+                        "내용": f"{subject} 미해결 오답 {count}문제 다시 풀고, 맞힌 문제는 해결 표시 (약 25분)",
+                    }
+                )
+
+        while len(day_tasks) < tasks_per_day:
+            day_tasks.append(
+                {
+                    "자료": "복습",
+                    "내용": f"{subject} 오늘까지 공부한 범위에서 핵심 개념 5개를 빈 종이에 쓰고 확인 (약 20분)",
+                }
+            )
+
         rows.append(
             {
                 "날짜": study_date.isoformat(),
                 "요일": WEEKDAY_KO[study_date.weekday()],
                 "과목": subject,
-                "학습내용": tasks,
+                "학습내용": day_tasks,
             }
         )
     return rows
 
 
-def plan_to_csv(rows):
+def plan_to_csv(rows: List[dict]) -> bytes:
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["날짜", "요일", "과목", "학습1", "학습2", "학습3", "학습4", "학습5"])
+    writer.writerow(["날짜", "요일", "과목", "자료1", "할 일1", "자료2", "할 일2", "자료3", "할 일3", "자료4", "할 일4"])
     for row in rows:
-        tasks = list(row.get("학습내용", []))
-        writer.writerow([row.get("날짜", ""), row.get("요일", ""), row.get("과목", ""), *(tasks + [""] * (5 - len(tasks)))])
+        tasks = list(row.get("학습내용", []))[:4]
+        flattened = []
+        for task in tasks:
+            flattened.extend([task.get("자료", ""), task.get("내용", "")])
+        flattened.extend([""] * (8 - len(flattened)))
+        writer.writerow([row.get("날짜", ""), row.get("요일", ""), row.get("과목", ""), *flattened])
     return output.getvalue().encode("utf-8-sig")
 
 
-def render_month(year, month, plan_lookup):
+def render_month(year: int, month: int, plan_lookup: Dict[str, dict]) -> None:
     cal = calendar.Calendar(firstweekday=6)
     weeks = cal.monthdatescalendar(year, month)
     header = "".join(f"<th>{day}</th>" for day in ["일", "월", "화", "수", "목", "금", "토"])
@@ -123,75 +263,166 @@ def render_month(year, month, plan_lookup):
             item = plan_lookup.get(current_date.isoformat())
             if in_month and item:
                 subject = html.escape(str(item.get("과목", "")))
-                tasks = "".join(f"<li>{html.escape(str(task))}</li>" for task in item.get("학습내용", []))
-                content = f'<div class="subject">{subject}</div><ul>{tasks}</ul>'
+                task_parts = []
+                for task in item.get("학습내용", []):
+                    resource = html.escape(str(task.get("자료", "")))
+                    text = html.escape(str(task.get("내용", "")))
+                    color = RESOURCE_COLORS.get(task.get("자료", ""), "#eef0f2")
+                    task_parts.append(
+                        f'<div class="task"><span class="resource" style="background:{color}">{resource}</span>{text}</div>'
+                    )
+                content = f'<div class="subject">{subject}</div>{"".join(task_parts)}'
             cells.append(f'<td class="{cell_class}"><div class="day-number">{day_number}</div>{content}</td>')
         rows_html.append("<tr>" + "".join(cells) + "</tr>")
 
     st.markdown(f"### {year}년 {month}월")
     st.markdown(
         f"""
+        <div class="calendar-scroll">
         <table class="calendar-table">
             <thead><tr>{header}</tr></thead>
             <tbody>{''.join(rows_html)}</tbody>
         </table>
+        </div>
         """,
         unsafe_allow_html=True,
     )
 
 
+def render_detailed_list(plan: List[dict]) -> None:
+    st.subheader("날짜별 상세 할 일")
+    for item in plan:
+        with st.container(border=True):
+            st.markdown(f"**{item['날짜']} ({item['요일']}) · {item['과목']}**")
+            for task in item.get("학습내용", []):
+                st.write(f"- **{task.get('자료', '')}**: {task.get('내용', '')}")
+
+
 init_state()
 st.title("🗓️ 날짜별 시험 계획표")
-st.caption("선택한 연속 일수 동안 같은 과목이 이어지도록 자동 배정합니다.")
+st.caption("한 과목을 정한 일수만큼 연속 배정하고, 교과서·자습서·문제집·프린트 범위를 날짜별로 쪼갭니다.")
 
 st.markdown(
     """
     <style>
-    .calendar-table {width:100%; border-collapse:collapse; table-layout:fixed; margin-bottom:28px;}
+    .calendar-scroll {overflow-x:auto;}
+    .calendar-table {width:100%; min-width:1050px; border-collapse:collapse; table-layout:fixed; margin-bottom:28px;}
     .calendar-table th {border:1px solid #cfd8dc; padding:8px; background:#f3f7f8; text-align:center;}
-    .calendar-cell {height:150px; border:1px solid #b0bec5; vertical-align:top; padding:7px; background:white;}
+    .calendar-cell {height:230px; border:1px solid #b0bec5; vertical-align:top; padding:7px; background:white;}
     .calendar-cell.other-month {background:#f7f7f7;}
     .day-number {font-weight:700; font-size:1.05rem; margin-bottom:5px;}
     .calendar-cell:nth-child(1) .day-number {color:#d32f2f;}
     .calendar-cell:nth-child(7) .day-number {color:#1976d2;}
-    .subject {display:inline-block; padding:2px 7px; border-radius:10px; background:#dff5f7; font-weight:700; margin-bottom:4px;}
-    .calendar-cell ul {padding-left:17px; margin:3px 0; font-size:0.84rem; line-height:1.35;}
+    .subject {display:inline-block; padding:2px 8px; border-radius:10px; background:#dff5f7; font-weight:700; margin-bottom:6px;}
+    .task {font-size:0.80rem; line-height:1.35; margin:5px 0; word-break:keep-all;}
+    .resource {display:inline-block; font-size:0.72rem; font-weight:700; padding:1px 5px; border-radius:8px; margin-right:4px;}
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-with st.form("planner_form"):
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        start_date = st.date_input("계획 시작일", value=date.today())
-        end_date = st.date_input("계획 종료일", value=date.today() + timedelta(days=27))
-    with col2:
-        selected_subjects = st.multiselect("공부할 과목", SUBJECTS, default=SUBJECTS)
-        tasks_per_day = st.slider("하루 학습 항목 수", 1, 5, 3)
-    with col3:
-        consecutive_days = st.slider("한 과목 연속 학습일", 1, 7, 3)
-        include_weekends = st.checkbox("주말도 공부", value=True)
-    submitted = st.form_submit_button("계획표 만들기", type="primary")
+st.subheader("1. 기본 설정")
+col1, col2, col3 = st.columns(3)
+with col1:
+    start_date = st.date_input("계획 시작일", value=date.today(), key="plan_start")
+    end_date = st.date_input("계획 종료일", value=date.today() + timedelta(days=27), key="plan_end")
+with col2:
+    selected_subjects = st.multiselect(
+        "공부할 과목",
+        SUBJECTS,
+        default=SUBJECTS,
+        key="plan_subjects",
+    )
+    tasks_per_day = st.slider("하루 학습 항목 수", 1, 4, 3, key="plan_tasks_per_day")
+with col3:
+    consecutive_days = st.slider("한 과목 연속 학습일", 1, 7, 3, key="plan_consecutive_days")
+    include_weekends = st.checkbox("주말도 공부", value=True, key="plan_include_weekends")
 
-if submitted:
-    if end_date < start_date:
-        st.error("종료일은 시작일보다 빠를 수 없습니다.")
-    elif not selected_subjects:
-        st.error("과목을 하나 이상 선택하세요.")
-    else:
-        st.session_state.study_plan = build_plan(
-            start_date,
-            end_date,
-            selected_subjects,
-            tasks_per_day,
-            consecutive_days,
-            include_weekends,
+st.subheader("2. 과목별 시험 범위")
+st.caption("실제 시험 범위에 맞게 시작·끝 번호를 바꾸세요. 프린트는 페이지 대신 프린트 번호로 입력합니다.")
+
+material_configs: Dict[str, dict] = {}
+for subject in selected_subjects:
+    saved = st.session_state.study_materials.get(subject, {})
+    with st.expander(f"{subject} 범위 설정", expanded=(subject == selected_subjects[0])):
+        unit_name = st.text_input(
+            "단원/범위 이름",
+            value=str(saved.get("단원", "시험 범위")),
+            key=f"unit_{subject}",
+            placeholder="예: 2단원 함수 ~ 3단원 경우의 수",
         )
-        st.success("계획표를 만들었습니다.")
+        resource_columns = st.columns(4)
+        subject_config = {"단원": unit_name}
+        for index, resource in enumerate(RESOURCE_ORDER):
+            with resource_columns[index]:
+                previous = saved.get(resource, {})
+                default_start, default_end = DEFAULT_RANGES[resource]
+                enabled = st.checkbox(
+                    f"{resource} 사용",
+                    value=bool(previous.get("사용", True)),
+                    key=f"enabled_{subject}_{resource}",
+                )
+                start_value = st.number_input(
+                    f"{resource} 시작",
+                    min_value=1,
+                    max_value=9999,
+                    value=int(previous.get("시작", default_start)),
+                    step=1,
+                    key=f"start_{subject}_{resource}",
+                )
+                end_value = st.number_input(
+                    f"{resource} 끝",
+                    min_value=1,
+                    max_value=9999,
+                    value=int(previous.get("끝", default_end)),
+                    step=1,
+                    key=f"end_{subject}_{resource}",
+                )
+                subject_config[resource] = {
+                    "사용": enabled,
+                    "시작": int(start_value),
+                    "끝": int(end_value),
+                }
+        material_configs[subject] = subject_config
+
+create_plan = st.button("계획표 만들기", type="primary", use_container_width=True)
+
+if create_plan:
+    errors = []
+    if end_date < start_date:
+        errors.append("종료일은 시작일보다 빠를 수 없습니다.")
+    if not selected_subjects:
+        errors.append("과목을 하나 이상 선택하세요.")
+    for subject, config in material_configs.items():
+        active_resources = 0
+        for resource in RESOURCE_ORDER:
+            item = config[resource]
+            if item["사용"]:
+                active_resources += 1
+                if item["시작"] > item["끝"]:
+                    errors.append(f"{subject} {resource}의 시작 번호가 끝 번호보다 큽니다.")
+        if active_resources == 0:
+            errors.append(f"{subject}에서 사용할 자료를 하나 이상 선택하세요.")
+
+    if errors:
+        for message in errors:
+            st.error(message)
+    else:
+        st.session_state.study_materials = material_configs
+        st.session_state.study_plan = build_plan(
+            start_date=start_date,
+            end_date=end_date,
+            selected_subjects=selected_subjects,
+            tasks_per_day=tasks_per_day,
+            consecutive_days=consecutive_days,
+            include_weekends=include_weekends,
+            material_configs=material_configs,
+        )
+        st.success("교재별 범위를 날짜별로 나눈 계획표를 만들었습니다.")
 
 plan = st.session_state.study_plan
 if plan:
+    st.divider()
     plan_lookup = {item["날짜"]: item for item in plan}
     first = date.fromisoformat(plan[0]["날짜"])
     last = date.fromisoformat(plan[-1]["날짜"])
@@ -207,8 +438,10 @@ if plan:
     st.download_button(
         "계획표 CSV 다운로드",
         data=plan_to_csv(plan),
-        file_name="시험_계획표.csv",
+        file_name="시험_계획표_상세.csv",
         mime="text/csv",
+        use_container_width=True,
     )
+    render_detailed_list(plan)
 else:
-    st.info("조건을 입력하고 계획표 만들기를 누르세요.")
+    st.info("기본 설정과 과목별 범위를 입력한 뒤 계획표 만들기를 누르세요.")
