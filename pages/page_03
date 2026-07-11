@@ -1,74 +1,105 @@
+import csv
+import html
+import io
+from datetime import date
+
 import streamlit as st
 
-from app_utils import (
-    dataframe_to_csv_bytes,
-    display_comment_table,
-    init_session_state,
-    render_video_summary,
-    require_comments,
-)
+st.set_page_config(page_title="오답 기록", page_icon="📝", layout="wide")
 
-st.set_page_config(page_title="댓글 검색", page_icon="🔎", layout="wide")
-init_session_state()
+SUBJECTS = ["국어", "수학", "영어", "과학", "사회"]
 
-st.title("🔎 댓글 검색과 필터")
-st.write("댓글 내용, 작성자, 좋아요 수, 답글 수를 조합해 원하는 댓글을 찾습니다.")
 
-if require_comments():
-    render_video_summary()
-    df = st.session_state["comments_df"].copy()
+def init_state():
+    if "wrong_questions" not in st.session_state or not isinstance(st.session_state.wrong_questions, list):
+        st.session_state.wrong_questions = []
 
-    first, second = st.columns(2)
-    with first:
-        keyword = st.text_input("댓글 키워드", placeholder="예: 재미있다")
-        min_likes = st.number_input("최소 좋아요 수", min_value=0, value=0, step=1)
-    with second:
-        author_keyword = st.text_input("작성자 이름", placeholder="작성자 이름 일부")
-        min_replies = st.number_input("최소 답글 수", min_value=0, value=0, step=1)
 
-    filtered_df = df.copy()
-    if keyword.strip():
-        filtered_df = filtered_df[
-            filtered_df["comment"].str.contains(
-                keyword.strip(), case=False, na=False, regex=False
-            )
-        ]
-    if author_keyword.strip():
-        filtered_df = filtered_df[
-            filtered_df["author"].str.contains(
-                author_keyword.strip(), case=False, na=False, regex=False
-            )
-        ]
+def wrong_csv(records):
+    fields = ["날짜", "과목", "시험/교재", "문항", "오답유형", "메모", "해결"]
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=fields)
+    writer.writeheader()
+    for record in records:
+        writer.writerow({field: record.get(field, "") for field in fields})
+    return output.getvalue().encode("utf-8-sig")
 
-    filtered_df = filtered_df[
-        (filtered_df["like_count"] >= int(min_likes))
-        & (filtered_df["reply_count"] >= int(min_replies))
-    ]
 
-    sort_label = st.selectbox(
-        "검색 결과 정렬",
-        ["좋아요 많은 순", "답글 많은 순", "최신순", "오래된 순"],
+init_state()
+st.title("📝 지금까지 틀린 문제")
+st.caption("오답을 기록하고 해결 여부를 바꾸면 계획표와 예상점수에 반영됩니다.")
+
+with st.form("wrong_form", clear_on_submit=True):
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        wrong_date = st.date_input("기록 날짜", value=date.today())
+        subject = st.selectbox("과목", SUBJECTS)
+    with col2:
+        source = st.text_input("시험/교재", placeholder="예: 6월 모의고사")
+        question = st.text_input("문항 번호", placeholder="예: 21")
+    with col3:
+        wrong_type = st.selectbox("오답 유형", ["개념 부족", "계산 실수", "문제 해석", "시간 부족", "암기 부족", "기타"])
+        solved = st.checkbox("이미 해결함", value=False)
+    memo = st.text_area("오답 메모", placeholder="틀린 이유와 다음에 주의할 점")
+    submitted = st.form_submit_button("오답 추가", type="primary")
+
+if submitted:
+    st.session_state.wrong_questions.append(
+        {
+            "날짜": wrong_date.isoformat(),
+            "과목": subject,
+            "시험/교재": source.strip() or "미입력",
+            "문항": question.strip() or "-",
+            "오답유형": wrong_type,
+            "메모": memo.strip(),
+            "해결": bool(solved),
+        }
     )
-    if sort_label == "좋아요 많은 순":
-        filtered_df = filtered_df.sort_values(
-            ["like_count", "reply_count"], ascending=False
-        )
-    elif sort_label == "답글 많은 순":
-        filtered_df = filtered_df.sort_values(
-            ["reply_count", "like_count"], ascending=False
-        )
-    elif sort_label == "최신순":
-        filtered_df = filtered_df.sort_values("published_at", ascending=False)
-    else:
-        filtered_df = filtered_df.sort_values("published_at", ascending=True)
+    st.success("오답을 추가했습니다.")
 
-    st.metric("검색 결과", f"{len(filtered_df):,}개")
-    display_comment_table(filtered_df, "filtered_comments_table")
-    st.download_button(
-        "검색 결과 CSV 다운로드",
-        data=dataframe_to_csv_bytes(filtered_df),
-        file_name=f"filtered_comments_{st.session_state['video_details'].get('video_id', 'video')}.csv",
-        mime="text/csv",
-        use_container_width=True,
-        disabled=filtered_df.empty,
-    )
+records = st.session_state.wrong_questions
+if not records:
+    st.info("아직 입력한 오답이 없습니다.")
+else:
+    solved_count = sum(1 for item in records if bool(item.get("해결", False)))
+    col1, col2, col3 = st.columns(3)
+    col1.metric("전체 오답", f"{len(records)}문제")
+    col2.metric("해결 완료", f"{solved_count}문제")
+    col3.metric("미해결", f"{len(records)-solved_count}문제")
+
+    selected_subjects = st.multiselect("표시할 과목", SUBJECTS, default=SUBJECTS)
+    st.subheader("오답 목록")
+
+    visible_indices = [index for index, item in enumerate(records) if item.get("과목") in selected_subjects]
+    pending_values = {}
+    for index in visible_indices:
+        item = records[index]
+        with st.container(border=True):
+            top1, top2, top3, top4 = st.columns([1, 1, 1, 1])
+            top1.markdown(f"**{html.escape(str(item.get('과목', '')))}**")
+            top2.write(item.get("날짜", ""))
+            top3.write(f"{item.get('시험/교재', '')} · {item.get('문항', '')}번")
+            pending_values[index] = top4.checkbox("해결", value=bool(item.get("해결", False)), key=f"solved_{index}")
+            st.write(f"오답 유형: {item.get('오답유형', '')}")
+            if item.get("메모"):
+                st.caption(item.get("메모"))
+
+    if st.button("해결 여부 저장", type="primary"):
+        for index, value in pending_values.items():
+            st.session_state.wrong_questions[index]["해결"] = bool(value)
+        st.success("해결 여부를 저장했습니다.")
+        st.rerun()
+
+    st.subheader("과목별 미해결 오답")
+    for subject in SUBJECTS:
+        count = sum(1 for item in records if item.get("과목") == subject and not bool(item.get("해결", False)))
+        st.write(f"**{subject}** · {count}개")
+        st.progress(min(count / 10, 1.0))
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.download_button("오답 CSV 다운로드", data=wrong_csv(records), file_name="오답_기록.csv", mime="text/csv")
+    with col2:
+        if st.button("가장 최근 오답 삭제"):
+            st.session_state.wrong_questions = records[:-1]
+            st.rerun()
