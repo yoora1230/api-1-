@@ -1,0 +1,71 @@
+import pandas as pd
+import streamlit as st
+
+from app_utils import (
+    dataframe_to_csv_bytes,
+    display_comment_table,
+    has_comments,
+    init_session_state,
+    render_api_status,
+    render_comment_loader,
+    render_video_summary,
+)
+
+st.set_page_config(page_title="전체 댓글 분석", page_icon="📊", layout="wide")
+init_session_state()
+
+st.title("📊 전체 댓글 분석")
+st.write("영상 URL을 입력해 공개된 최상위 댓글을 불러옵니다.")
+render_api_status()
+render_comment_loader("analysis")
+
+if has_comments():
+    st.divider()
+    render_video_summary()
+
+    df = st.session_state["comments_df"].copy()
+    total_comments = len(df)
+    average_likes = df["like_count"].mean() if total_comments else 0
+    max_likes = int(df["like_count"].max()) if total_comments else 0
+    total_replies = int(df["reply_count"].sum()) if total_comments else 0
+
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("불러온 댓글", f"{total_comments:,}개")
+    metric_cols[1].metric("평균 좋아요", f"{average_likes:,.1f}개")
+    metric_cols[2].metric("최대 좋아요", f"{max_likes:,}개")
+    metric_cols[3].metric("답글 합계", f"{total_replies:,}개")
+
+    st.subheader("좋아요 분포")
+    bins = [-1, 0, 4, 9, 49, 99, 499, float("inf")]
+    labels = ["0", "1~4", "5~9", "10~49", "50~99", "100~499", "500+"]
+    bucket_series = pd.cut(df["like_count"], bins=bins, labels=labels)
+    chart_df = (
+        bucket_series.value_counts(sort=False)
+        .rename_axis("좋아요 구간")
+        .reset_index(name="댓글 수")
+        .set_index("좋아요 구간")
+    )
+    st.bar_chart(chart_df)
+
+    st.subheader("댓글 목록")
+    sort_label = st.selectbox(
+        "표 정렬",
+        ["좋아요 많은 순", "답글 많은 순", "최신순", "오래된 순"],
+    )
+    if sort_label == "좋아요 많은 순":
+        sorted_df = df.sort_values(["like_count", "reply_count"], ascending=False)
+    elif sort_label == "답글 많은 순":
+        sorted_df = df.sort_values(["reply_count", "like_count"], ascending=False)
+    elif sort_label == "최신순":
+        sorted_df = df.sort_values("published_at", ascending=False)
+    else:
+        sorted_df = df.sort_values("published_at", ascending=True)
+
+    display_comment_table(sorted_df, "all_comments_table")
+    st.download_button(
+        "전체 댓글 CSV 다운로드",
+        data=dataframe_to_csv_bytes(sorted_df),
+        file_name=f"youtube_comments_{st.session_state['video_details'].get('video_id', 'video')}.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
