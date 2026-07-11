@@ -1,54 +1,75 @@
 import streamlit as st
 
-from app_utils import has_comments, init_session_state, render_api_status, render_video_summary
+st.set_page_config(page_title="시험 계획표", page_icon="📚", layout="wide")
 
-st.set_page_config(
-    page_title="YouTube 인기 댓글 분류기",
-    page_icon="💬",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+SUBJECTS = ["국어", "수학", "영어", "과학", "사회"]
 
-init_session_state()
 
-st.title("💬 YouTube 인기 댓글 분류기")
-st.write(
-    "YouTube Data API v3로 영상 댓글을 불러오고, 좋아요 수가 많은 댓글을 별도로 분류하는 사이트입니다."
-)
+def init_state():
+    defaults = {
+        "mock_scores": [],
+        "wrong_questions": [],
+        "study_plan": [],
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state or not isinstance(st.session_state[key], list):
+            st.session_state[key] = value.copy()
 
-render_api_status()
 
-st.divider()
+def unresolved_counts():
+    counts = {subject: 0 for subject in SUBJECTS}
+    for item in st.session_state.wrong_questions:
+        subject = item.get("과목")
+        if subject in counts and not bool(item.get("해결", False)):
+            counts[subject] += 1
+    return counts
 
-if has_comments():
-    st.subheader("현재 불러온 영상")
-    render_video_summary()
-    st.success("왼쪽 메뉴에서 인기 댓글 분류 또는 댓글 검색 페이지로 이동할 수 있습니다.")
-else:
-    st.subheader("사용 순서")
-    st.markdown(
-        """
-1. Streamlit 앱의 **Settings → Secrets**에 YouTube API 키를 등록합니다.
-2. 왼쪽 메뉴에서 **전체 댓글 분석** 페이지를 엽니다.
-3. YouTube 영상 주소와 댓글 수를 입력한 뒤 댓글을 불러옵니다.
-4. **좋아요 많은 댓글** 페이지에서 기준값을 정해 인기 댓글을 분류합니다.
-5. 필요한 결과는 CSV 파일로 내려받습니다.
-        """
+
+def expected_score(subject):
+    records = sorted(
+        st.session_state.mock_scores,
+        key=lambda item: str(item.get("날짜", "")),
     )
+    values = []
+    for item in records:
+        value = item.get(subject)
+        if isinstance(value, (int, float)):
+            values.append(float(value))
+
+    recent = values[-3:]
+    average = sum(recent) / len(recent) if recent else 70.0
+    trend = recent[-1] - recent[-2] if len(recent) >= 2 else 0.0
+    penalty = min(12.0, unresolved_counts()[subject] * 0.8)
+    return max(0.0, min(100.0, average + trend * 0.35 - penalty))
+
+
+init_state()
+
+st.title("📚 나만의 시험 계획표")
+st.caption("모의고사 성적과 오답을 바탕으로 과목을 연속 배정하는 시험 대비 사이트입니다.")
+
+unsolved_total = sum(1 for item in st.session_state.wrong_questions if not bool(item.get("해결", False)))
+predictions = [expected_score(subject) for subject in SUBJECTS]
+
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("모의고사 기록", f"{len(st.session_state.mock_scores)}회")
+col2.metric("전체 오답", f"{len(st.session_state.wrong_questions)}문제")
+col3.metric("미해결 오답", f"{unsolved_total}문제")
+col4.metric("평균 예상점수", f"{sum(predictions) / len(predictions):.1f}점")
 
 st.divider()
+st.subheader("페이지 안내")
 
-feature_cols = st.columns(3)
-with feature_cols[0]:
-    st.subheader("📊 전체 분석")
-    st.write("댓글 수, 평균 좋아요, 답글 수와 좋아요 분포를 확인합니다.")
-with feature_cols[1]:
-    st.subheader("🔥 인기 댓글")
-    st.write("좋아요 기준을 직접 정하고 인기 댓글과 최상위 댓글을 분리합니다.")
-with feature_cols[2]:
-    st.subheader("🔎 댓글 검색")
-    st.write("키워드, 작성자, 최소 좋아요 수로 댓글을 빠르게 찾습니다.")
+cards = [
+    ("🗓️ 날짜별 계획표", "시험 기간과 연속 학습 일수를 설정해 달력형 계획표를 만듭니다."),
+    ("📊 모의고사 성적", "시험별 과목 점수를 입력하고 최근 점수 변화를 확인합니다."),
+    ("📝 오답 기록", "틀린 문제와 원인을 기록하고 해결 여부를 관리합니다."),
+    ("🎯 현재 예상점수", "최근 성적과 미해결 오답을 반영한 참고 점수를 확인합니다."),
+]
 
-st.caption(
-    "이 앱은 공개된 최상위 댓글을 분석합니다. 비공개 영상, 삭제된 댓글, 댓글이 중지된 영상은 가져올 수 없습니다."
-)
+for title, description in cards:
+    with st.container(border=True):
+        st.markdown(f"### {title}")
+        st.write(description)
+
+st.info("입력한 자료는 같은 브라우저 세션의 여러 페이지에서 공유됩니다. 브라우저 세션이 완전히 종료되면 초기화될 수 있습니다.")
